@@ -1,3 +1,13 @@
-# Keep the Kinlet project in this workspace.
-/*
-!/.gitignore
+# Dependencies and generated output
+node_modules/
+dist/
+playwright-report/
+test-results/
+*.tsbuildinfo
+artifacts/
+
+# Local configuration and project documentation
+.env*
+*.local
+*.md
+/forge/

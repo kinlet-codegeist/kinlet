@@ -1,0 +1,52 @@
+{
+  "name": "kinlet-forge-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "tsc -b --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "dev:forge": "vite --mode forge --host 0.0.0.0 --port 5174",
+    "build:forge": "tsc -b --noEmit && vite build --mode forge",
+    "preview:forge": "vite preview --mode forge --host 0.0.0.0 --port 4174",
+    "forge": "forge",
+    "forge:check": "node scripts/check-forge.mjs",
+    "forge:lint": "forge lint --environment development",
+    "forge:register": "forge register Kinlet",
+    "forge:deploy": "npm run build:forge && node scripts/check-forge.mjs --require-registration && forge deploy --environment development",
+    "forge:install": "forge install --environment development --product jira",
+    "forge:tunnel": "forge tunnel --environment development"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.0",
+    "@forge/api": "^8.5.0",
+    "@forge/bridge": "^7.3.0",
+    "@forge/resolver": "^2.0.2",
+    "@forge/sql": "^4.0.10",
+    "lucide-react": "^0.468.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-router-dom": "6.30.6"
+  },
+  "devDependencies": {
+    "@forge/cli": "^15.1.0",
+    "@forge/manifest": "^13.9.0",
+    "@openai/codex-sdk": "^0.170.0",
+    "@playwright/test": "1.56.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "prettier": "^3.10.1",
+    "typescript": "^5.9.0",
+    "vite": "6.4.6",
+    "vitest": "^5.1.0",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": "^22.23.4 || ^24.22.1"
+  }
+}
