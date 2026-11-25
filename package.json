@@ -16,7 +16,7 @@
     "forge:check": "node scripts/check-forge.mjs",
     "forge:lint": "forge lint --environment development",
     "forge:register": "forge register Kinlet",
-    "forge:deploy": "npm run build:forge && node scripts/check-forge.mjs --require-registration && forge deploy --environment development",
+    "forge:deploy": "npm run build:forge && node scripts/check-forge.mjs --require-registration && node scripts/deploy-forge-development.mjs",
     "forge:install": "forge install --environment development --product jira",
     "forge:tunnel": "forge tunnel --environment development"
   },

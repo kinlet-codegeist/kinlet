@@ -14,8 +14,23 @@ const resource = manifest.resources?.find(
 const decisionAction = manifest.modules?.action?.find(
   (action) => action.key === "kinlet-read-decision",
 );
+const declaredScopes = manifest.permissions?.scopes ?? [];
+const scopes = new Set(
+  Array.isArray(declaredScopes) ? declaredScopes : Object.keys(declaredScopes),
+);
+const canCreateJiraIssues =
+  scopes.has("write:jira-work") ||
+  [
+    "read:issue:jira",
+    "write:issue:jira",
+    "write:attachment:jira",
+    "write:comment:jira",
+    "write:comment.property:jira",
+  ].every((scope) => scopes.has(scope));
+
 const expected = {
   "Jira project-page module": Boolean(page),
+  "Jira practice-ticket creation scopes": canCreateJiraIssues,
   "Custom UI resource": resource?.path === "dist/forge-ui",
   "Built Forge frontend": existsSync("dist/forge-ui/index.html"),
   "Read-only decision tool for Rovo and MCP":
@@ -32,8 +47,8 @@ const expected = {
       server.tools?.includes(decisionAction.key),
     ),
   "Teamwork Graph issue and goal scopes":
-    manifest.permissions?.scopes?.includes("read:graph:issue:jira") &&
-    manifest.permissions?.scopes?.includes("read:graph:goal:atlassian"),
+    scopes.has("read:graph:issue:jira") &&
+    scopes.has("read:graph:goal:atlassian"),
   "Node.js 24 runtime": manifest.app?.runtime?.name === "nodejs24.x",
   "Local UI tunnel": resource?.tunnel?.port === 5174,
 };
