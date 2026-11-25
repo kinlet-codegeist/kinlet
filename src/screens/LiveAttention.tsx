@@ -320,7 +320,7 @@ export function LiveAttention() {
         description="Choose which plan changes, drafts and publications to review next."
         actions={
           <Link className="text-link" to="/jira">
-            Back to Jira checkpoints
+            Back to review home
           </Link>
         }
       />

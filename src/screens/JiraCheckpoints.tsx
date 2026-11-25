@@ -1,5 +1,8 @@
 import { LiveAttention } from "./LiveAttention";
 import { LiveWorkspace } from "./LiveWorkspace";
+import { ProjectSections, type ProjectSection } from "./ProjectSections";
+import { JiraReviewHome, JiraReviewTools } from "../components/JiraReviewHome";
+import { LiveCheckoutDemo } from "../components/LiveCheckoutDemo";
 import { DecisionImpact } from "./DecisionImpact";
 import { LinkedGoals } from "../components/LinkedGoals";
 import { BranchInbox } from "../components/BranchInbox";
@@ -10,7 +13,7 @@ import { TicketBranches } from "../components/TicketBranches";
 import { jiraBranchStore } from "../platform/ticket-branches";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { BrandMark, Button, Notice, PageTitle } from "../components/ui";
+import { BrandMark, Button, PageTitle } from "../components/ui";
 import { CheckoutExample } from "./CheckoutExample";
 import { NeedsReview } from "../components/NeedsReview";
 import { LinkedPlan } from "../components/PlanComparison";
@@ -20,7 +23,6 @@ import {
   attachCheckpoint,
   readCheckpoint,
   readTicket,
-  recentTickets,
   sameText,
   type CheckpointFile,
   type SavedTicket,
@@ -48,55 +50,23 @@ export function JiraCheckpoints() {
   const showAttention = params.get("view") === "attention" && runtime.connected;
   const showPlans = params.get("view") === "plans" && runtime.connected;
   const showWorkspace = params.get("view") === "workspace" && runtime.connected;
+  const showPractice = params.get("view") === "practice" && runtime.connected;
   const showDecisionImpact =
     params.get("view") === "compare-decision" && runtime.connected;
   const selected = params.get("ticket")?.trim().toUpperCase() ?? "";
-  const [input, setInput] = useState(selected);
-  const [recent, setRecent] = useState<
-    Awaited<ReturnType<typeof recentTickets>>
-  >([]);
-  const [listError, setListError] = useState(false);
-  const [loadingList, setLoadingList] = useState(runtime.connected);
+  const view = params.get("view");
+  const projectSection = (
+    [
+      "history",
+      "project-branches",
+      "agents",
+      "project-reviews",
+      "settings",
+    ] as const
+  ).find((section) => section === view);
   useEffect(() => {
-    if (
-      !runtime.connected ||
-      showExample ||
-      showSearch ||
-      showInbox ||
-      showWorkspace ||
-      showDecisionImpact ||
-      showAttention ||
-      showPlans
-    )
-      return;
-    setLoadingList(true);
-    setListError(false);
-    let current = true;
-    recentTickets()
-      .then((rows) => {
-        if (current) setRecent(rows);
-      })
-      .catch(() => {
-        if (current) setListError(true);
-      })
-      .finally(() => {
-        if (current) setLoadingList(false);
-      });
-    return () => {
-      current = false;
-    };
-  }, [
-    showExample,
-    showSearch,
-    showInbox,
-    showWorkspace,
-    showDecisionImpact,
-    showAttention,
-    showPlans,
-  ]);
-  useEffect(() => setInput(selected), [selected]);
-  const select = (key: string) =>
-    setParams({ ticket: key.trim().toUpperCase() });
+    window.scrollTo({ top: 0 });
+  }, [selected, view, showExample]);
   return (
     <main className="live-shell">
       <header className="live-nav">
@@ -104,13 +74,34 @@ export function JiraCheckpoints() {
           <BrandMark /> Kinlet
         </Link>
         {runtime.connected && <span>{runtime.projectKey}</span>}
-        <Link to="/attention" className="text-link">
-          Sample workspace
-        </Link>
+        <nav aria-label="Project navigation" className="kinlet-project-nav">
+          <Link to="/jira">Overview</Link>
+          <Link to="/jira?view=history">History</Link>
+          <Link to="/jira?view=project-branches">Branches</Link>
+          <Link to="/jira?view=agents">Agents</Link>
+          <Link to="/jira?view=project-reviews">Reviews</Link>
+          <Link to="/jira?view=settings">Settings</Link>
+        </nav>
       </header>
       <div className="page live-page">
-        {showExample ? (
+        {projectSection && runtime.connected ? (
+          <ProjectSections section={projectSection as ProjectSection} />
+        ) : showExample ? (
           <CheckoutExample />
+        ) : showPractice ? (
+          <>
+            <Link className="text-link kinlet-back" to="/jira">
+              Back to review home
+            </Link>
+            <LiveCheckoutDemo
+              onBranch={async (id) =>
+                setParams({ view: "workspace", record: "branch", id })
+              }
+              onCheckpoint={async (id) =>
+                setParams({ view: "workspace", record: "checkpoint", id })
+              }
+            />
+          </>
         ) : showAttention ? (
           <LiveAttention />
         ) : showPlans ? (
@@ -145,7 +136,7 @@ export function JiraCheckpoints() {
               description="Review draft edits across this project. Fields that also changed in Jira appear first."
               actions={
                 <Link className="text-link" to="/jira">
-                  Back to Jira checkpoints
+                  Back to review home
                 </Link>
               }
             />
@@ -161,7 +152,7 @@ export function JiraCheckpoints() {
               description="Find the recorded reason for a change across this project’s tickets."
               actions={
                 <Link className="text-link" to="/jira">
-                  Back to Jira checkpoints
+                  Back to review home
                 </Link>
               }
             />
@@ -173,145 +164,29 @@ export function JiraCheckpoints() {
               />
             </section>
           </>
-        ) : (
+        ) : selected && runtime.connected ? (
           <>
-            <PageTitle
-              title="Jira checkpoints"
-              actions={
-                <div className="live-heading-actions">
-                  {runtime.connected && (
-                    <>
-                      <Link
-                        className="button button-secondary"
-                        to="/jira?view=attention"
-                      >
-                        Needs attention
-                      </Link>
-                      <Link
-                        className="button button-secondary"
-                        to="/jira?view=workspace"
-                      >
-                        Project workspace
-                      </Link>
-                      <Link
-                        className="button button-secondary"
-                        to={
-                          "/jira?view=compare-decision" +
-                          (selected
-                            ? "&anchor=" + encodeURIComponent(selected)
-                            : "")
-                        }
-                      >
-                        Compare decision options
-                      </Link>
-                      <Link
-                        className="button button-secondary"
-                        to="/jira?view=branches"
-                      >
-                        Branch inbox
-                      </Link>
-                      <Link
-                        className="button button-secondary"
-                        to="/jira?view=decisions"
-                      >
-                        Find a decision
-                      </Link>
-                    </>
-                  )}
-                  <Link
-                    className="button button-secondary"
-                    to="/jira?example=checkout"
-                  >
-                    Try the checkout example
-                  </Link>
-                </div>
-              }
-              description="Track a ticket with its Confluence plan and review new plan versions."
+            <Link
+              className="text-link kinlet-back"
+              to={params.has("review") ? "/jira?view=decisions" : "/jira"}
+            >
+              {params.has("review")
+                ? "Back to decision search"
+                : "Back to tasks"}
+            </Link>
+            <TicketHistory
+              key={selected}
+              issueKey={selected}
+              selectedReview={params.get("review") ?? undefined}
             />
-            {!runtime.connected ? (
-              <Notice>
-                Open Kinlet in a Jira project to save and compare tickets. You
-                can explore the sample workspace here.
-              </Notice>
-            ) : (
-              <>
-                {selected && (
-                  <Link
-                    className="text-link return-to-reviews"
-                    to={params.has("review") ? "/jira?view=decisions" : "/jira"}
-                  >
-                    {params.has("review")
-                      ? "Back to decision search"
-                      : "Back to Needs review"}
-                  </Link>
-                )}
-                <section className="card padded-card">
-                  <form
-                    className="live-ticket-form"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      if (input.trim()) select(input);
-                    }}
-                  >
-                    <label htmlFor="ticket-key">Ticket key</label>
-                    <div>
-                      <input
-                        id="ticket-key"
-                        placeholder={runtime.projectKey + "-123"}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        autoComplete="off"
-                        autoCapitalize="characters"
-                        required
-                      />
-                      <Button type="submit" disabled={!input.trim()}>
-                        Open Jira ticket
-                      </Button>
-                    </div>
-                  </form>
-                  {(!selected || recent.length > 0) && (
-                    <details
-                      className="live-recent"
-                      open={!selected || undefined}
-                    >
-                      <summary>Recently updated tickets</summary>
-                      {loadingList ? (
-                        <p role="status">Loading tickets…</p>
-                      ) : listError ? (
-                        <p>Couldn’t load the list. Enter a ticket key above.</p>
-                      ) : recent.length ? (
-                        <ul>
-                          {recent.map((r) => (
-                            <li key={r.key}>
-                              <button onClick={() => select(r.key)}>
-                                <strong>{r.key}</strong> {r.fields.summary}
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p>No tickets found in this project.</p>
-                      )}
-                    </details>
-                  )}
-                </section>
-                {!selected && (
-                  <NeedsReview
-                    onReviewSaved={(id) => {
-                      lastReviewedIssue.current = id;
-                    }}
-                  />
-                )}
-                {selected && (
-                  <TicketHistory
-                    key={selected}
-                    issueKey={selected}
-                    selectedReview={params.get("review") ?? undefined}
-                  />
-                )}
-              </>
-            )}
+            <JiraReviewTools ticketKey={selected} />
           </>
+        ) : (
+          <JiraReviewHome
+            onReviewSaved={(id) => {
+              lastReviewedIssue.current = id;
+            }}
+          />
         )}
       </div>
     </main>

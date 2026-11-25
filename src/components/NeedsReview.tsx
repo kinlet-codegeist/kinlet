@@ -20,24 +20,26 @@ export function ReviewPanel({
   items,
   onOpen,
   action,
+  title = "Needs review",
+  description,
   empty,
   children,
 }: {
   items: ReviewItem[];
   onOpen: (item: ReviewItem) => void;
   action?: ReactNode;
+  title?: string;
+  description?: string;
   empty?: string;
   children?: ReactNode;
 }) {
   return (
-    <section
-      className="card padded-card review-queue"
-      aria-label="Needs review"
-    >
+    <section className="card padded-card review-queue" aria-label={title}>
       <div className="live-heading">
-        <h2>Needs review</h2>
+        <h2>{title}</h2>
         {action}
       </div>
+      {description && <p className="muted">{description}</p>}
       {items.length > 0 && (
         <ul>
           {items.map((item) => (
@@ -129,6 +131,8 @@ export function NeedsReview({
   const partial = !!list?.error || !!list?.unchecked.length;
   return (
     <ReviewPanel
+      title="Plans to review"
+      description="When a Confluence plan linked to a Jira task changes, it appears here."
       items={list?.items ?? []}
       onOpen={(item) => {
         setNotice(undefined);
@@ -136,14 +140,14 @@ export function NeedsReview({
       }}
       action={
         <Button size="small" disabled={!list} onClick={refresh}>
-          Refresh list
+          Check for updates
         </Button>
       }
       empty={
         list && !partial
           ? list.tracked
-            ? "No linked plans need review."
-            : "Save a checkpoint with a Confluence plan to track it here."
+            ? "Your linked plans are up to date."
+            : "No plans linked yet. Open a Jira task to link its plan."
           : undefined
       }
     >

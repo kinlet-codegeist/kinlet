@@ -40,6 +40,10 @@ const reviewLabels = {
   body: "Wording",
   priority: "Jira priority ID",
 };
+const practiceLabels = {
+  ...reviewLabels,
+  body: "Description",
+};
 const stepLabels = {
   pending: "Ready to apply",
   applied: "Applied",
@@ -56,8 +60,10 @@ export function WorkspaceProposalReview({
   id,
   onApproved,
   onBranch,
+  practice = false,
 }: {
   id: string;
+  practice?: boolean;
   onApproved: (id: string) => Promise<void>;
   onBranch: (id: string) => Promise<void>;
 }) {
@@ -91,6 +97,7 @@ export function WorkspaceProposalReview({
   }, [id]);
   const approved =
     preview?.choices.filter((item) => selected.includes(item.id)) ?? [];
+  const labels = practice ? practiceLabels : reviewLabels;
   async function approve(event: FormEvent) {
     event.preventDefault();
     const selection = approved.map(({ id, evidence }) => ({ id, evidence }));
@@ -118,7 +125,7 @@ export function WorkspaceProposalReview({
       <div className="live-heading">
         <h2>{preview?.name ?? "Review proposal"}</h2>
         <Button disabled={busy} onClick={() => void load()}>
-          Refresh comparison
+          {practice ? "Check for updates" : "Refresh comparison"}
         </Button>
       </div>
       {busy && <p role="status">Checking proposal…</p>}
@@ -141,36 +148,44 @@ export function WorkspaceProposalReview({
           {preview.choices.map((choice) => (
             <article className="workspace-choice" key={choice.id}>
               <h3>
-                {choice.label} · {reviewLabels[choice.field]}
+                {practice
+                  ? labels[choice.field]
+                  : choice.label + " · " + labels[choice.field]}
               </h3>
               {choice.conflict && (
                 <p className="handoff-plan-change">
                   The current source differs from the checkpoint.
                 </p>
               )}
-              {choice.citations?.length ? (
+              {!practice && !!choice.citations?.length && (
                 <CitationList citations={choice.citations} />
-              ) : null}
+              )}
               {choice.hold && (
                 <p className="handoff-plan-change">
                   {choice.hold === "evidence_unavailable"
                     ? "Draft hidden because a cited source is unavailable."
                     : choice.hold === "disputed"
                       ? "Resolve the conflicting citations in a follow-up branch."
-                      : "Check the changed evidence before approving this edit."}
+                      : practice
+                        ? "On hold. The rule behind this suggestion has changed."
+                        : "Check the changed evidence before approving this edit."}
                 </p>
               )}
               <div className="proposal-passages">
+                {(!practice || choice.conflict) && (
+                  <section>
+                    <h4>
+                      {practice ? "When the draft was written" : "Checkpoint"}
+                    </h4>
+                    <p className="plan-wording">{choice.base || "Empty"}</p>
+                  </section>
+                )}
                 <section>
-                  <h4>Checkpoint</h4>
-                  <p className="plan-wording">{choice.base || "Empty"}</p>
-                </section>
-                <section>
-                  <h4>Current source</h4>
+                  <h4>{practice ? "In Jira now" : "Current source"}</h4>
                   <p className="plan-wording">{choice.current || "Empty"}</p>
                 </section>
                 <section>
-                  <h4>Proposed</h4>
+                  <h4>{practice ? "Suggested change" : "Proposed"}</h4>
                   <p className="plan-wording">
                     {choice.hold === "evidence_unavailable"
                       ? "Unavailable"
@@ -178,28 +193,40 @@ export function WorkspaceProposalReview({
                   </p>
                 </section>
               </div>
-              <label className="workspace-checkbox">
-                <input
-                  type="checkbox"
-                  disabled={busy || !choice.available}
-                  checked={selected.includes(choice.id)}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setSelected((previous) =>
-                      checked
-                        ? [...previous, choice.id]
-                        : previous.filter((value) => value !== choice.id),
-                    );
-                  }}
-                />
-                {choice.available
-                  ? "Approve this field"
-                  : choice.hold
-                    ? "Review evidence first"
-                    : "This wording needs an edit that preserves formatting or field permissions"}
-              </label>
+              {practice && !!choice.citations?.length && (
+                <details className="checkout-practice-options">
+                  <summary>See the rule behind this change</summary>
+                  <CitationList citations={choice.citations} />
+                </details>
+              )}
+              {(!practice || choice.available) && (
+                <label className="workspace-checkbox">
+                  <input
+                    type="checkbox"
+                    disabled={busy || !choice.available}
+                    checked={selected.includes(choice.id)}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setSelected((previous) =>
+                        checked
+                          ? [...previous, choice.id]
+                          : previous.filter((value) => value !== choice.id),
+                      );
+                    }}
+                  />
+                  {choice.available
+                    ? practice
+                      ? "Keep this change to the " +
+                        labels[choice.field].toLowerCase()
+                      : "Approve this field"
+                    : choice.hold
+                      ? "Review evidence first"
+                      : "This wording needs an edit that preserves formatting or field permissions"}
+                </label>
+              )}
               {choice.hold === "evidence_changed" && (
                 <Button
+                  variant={practice ? "ghost" : "secondary"}
                   disabled={busy}
                   onClick={async () => {
                     setBusy(true);
@@ -217,7 +244,7 @@ export function WorkspaceProposalReview({
                     }
                   }}
                 >
-                  Revise held edit
+                  {practice ? "Write a replacement" : "Revise held edit"}
                 </Button>
               )}
               {choice.hold === "evidence_unavailable" && (
@@ -226,7 +253,8 @@ export function WorkspaceProposalReview({
                   comparison to prepare a repair.
                 </p>
               )}
-              {choice.hold !== "evidence_unavailable" &&
+              {!practice &&
+                choice.hold !== "evidence_unavailable" &&
                 (choice.hold ||
                   choice.conflict ||
                   (choice.citations?.length ?? 0) >= 2) && (
@@ -247,34 +275,40 @@ export function WorkspaceProposalReview({
                     Carry this field into a follow-up
                   </label>
                 )}
-              {!choice.hold && (choice.citations?.length ?? 0) >= 2 && (
-                <Button
-                  size="small"
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusy(true);
-                    setError("");
-                    try {
-                      await workspaceRequest("disputeEvidence", {
-                        proposalId: id,
-                        field: choice.id,
-                      });
-                      await load();
-                    } catch (err) {
-                      setError(workspaceMessage(err));
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  Mark citations as conflicting
-                </Button>
-              )}
+              {!practice &&
+                !choice.hold &&
+                (choice.citations?.length ?? 0) >= 2 && (
+                  <Button
+                    size="small"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await workspaceRequest("disputeEvidence", {
+                          proposalId: id,
+                          field: choice.id,
+                        });
+                        await load();
+                      } catch (err) {
+                        setError(workspaceMessage(err));
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Mark citations as conflicting
+                  </Button>
+                )}
             </article>
           ))}
-          {!!preview.choices.length && (
+          {(practice
+            ? preview.choices.some(({ available }) => available)
+            : !!preview.choices.length) && (
             <>
               <label>
-                Reason for approving these changes
+                {practice
+                  ? "Why does this change make sense?"
+                  : "Reason for approving these changes"}
                 <textarea
                   value={reason}
                   rows={2}
@@ -289,7 +323,9 @@ export function WorkspaceProposalReview({
                 variant="primary"
                 disabled={busy || !approved.length || !reason.trim()}
               >
-                Approve selected fields
+                {practice
+                  ? "Approve selected changes"
+                  : "Approve selected fields"}
               </Button>
             </>
           )}
@@ -337,7 +373,10 @@ export function WorkspaceProposalReview({
           </Button>
         </form>
       )}
-      <WorkspaceTimeline proposalId={id} />
+      <WorkspaceTimeline
+        proposalId={id}
+        label={practice ? "See review history" : undefined}
+      />
     </section>
   );
 }
@@ -348,8 +387,10 @@ export function WorkspaceReceipt({
   onReview,
   onBranch,
   onApplied,
+  practice = false,
 }: {
   id: string;
+  practice?: boolean;
   onCheckpoint: (id: string) => Promise<void>;
   onApplied?: () => Promise<void>;
   onReview: (id: string) => void;
@@ -389,9 +430,15 @@ export function WorkspaceReceipt({
   return (
     <section className="card padded-card workspace-card">
       <div className="live-heading">
-        <h2>Publication receipt</h2>
+        <h2>
+          {practice
+            ? receipt && !next && !held
+              ? "Change saved to Jira"
+              : "Apply your approved change"
+            : "Publication receipt"}
+        </h2>
         <Button disabled={busy} onClick={() => void perform(load)}>
-          Refresh receipt
+          {practice ? "Refresh status" : "Refresh receipt"}
         </Button>
       </div>
       {busy && <p role="status">Checking publication…</p>}
@@ -407,8 +454,10 @@ export function WorkspaceReceipt({
             {receipt.steps.map((step) => (
               <li key={step.index}>
                 {step.label}
-                {step.field && " · " + reviewLabels[step.field]} ·{" "}
-                {stepLabels[step.status]}
+                {step.field &&
+                  " · " +
+                    (practice ? practiceLabels : reviewLabels)[step.field]}{" "}
+                · {stepLabels[step.status]}
               </li>
             ))}
           </ol>
@@ -431,13 +480,19 @@ export function WorkspaceReceipt({
                 >
                   {next.status === "verification_required"
                     ? "Verify and continue"
-                    : "Apply next approved record"}
+                    : practice
+                      ? "Apply to Jira"
+                      : "Apply next approved record"}
                 </Button>
               )}
             <Button onClick={() => onReview(receipt.proposalId)}>
-              {held ? "Review remaining changes" : "Open reviewed proposal"}
+              {held
+                ? "Review remaining changes"
+                : practice
+                  ? "See your review"
+                  : "Open reviewed proposal"}
             </Button>
-            {!next && !held && (
+            {!practice && !next && !held && (
               <Button
                 variant="primary"
                 disabled={busy}
@@ -454,7 +509,8 @@ export function WorkspaceReceipt({
               </Button>
             )}
           </div>
-          {!next &&
+          {!practice &&
+            !next &&
             !held &&
             receipt.steps.some(({ status }) => status === "applied") && (
               <details>
@@ -494,7 +550,10 @@ export function WorkspaceReceipt({
                 </form>
               </details>
             )}
-          <WorkspaceTimeline proposalId={receipt.proposalId} />
+          <WorkspaceTimeline
+            proposalId={receipt.proposalId}
+            label={practice ? "See review history" : undefined}
+          />
         </>
       )}
     </section>

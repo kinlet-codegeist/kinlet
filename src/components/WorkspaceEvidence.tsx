@@ -630,7 +630,13 @@ type TimelineEntry = {
   kind?: string;
   source?: SourceRef;
 };
-export function WorkspaceTimeline({ proposalId }: { proposalId: string }) {
+export function WorkspaceTimeline({
+  proposalId,
+  label = "Decision timeline",
+}: {
+  proposalId: string;
+  label?: string;
+}) {
   const [timeline, setTimeline] = useState<{
     entries: TimelineEntry[];
     unavailable?: boolean;
@@ -656,7 +662,7 @@ export function WorkspaceTimeline({ proposalId }: { proposalId: string }) {
           );
       }}
     >
-      <summary>Decision timeline</summary>
+      <summary>{label}</summary>
       {error && <p role="alert">{error}</p>}
       {timeline?.unavailable && (
         <p>The timeline contains sources you can no longer view.</p>

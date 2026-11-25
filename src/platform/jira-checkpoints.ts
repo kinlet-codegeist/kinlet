@@ -121,19 +121,42 @@ export async function readAttentionSignals(key: string) {
   };
 }
 
-export async function readTicket(key: string): Promise<Ticket> {
-  key = key.trim().toUpperCase();
+export function parseTicketReference(input: string): string {
+  let key = input.trim();
+  if (URL.canParse(key)) {
+    const link = new URL(key);
+    if (
+      !runtime.siteUrl ||
+      link.protocol !== "https:" ||
+      link.origin !== new URL(runtime.siteUrl).origin
+    ) {
+      throw new Error("Paste a link to a task on this Jira site.");
+    }
+    key =
+      link.pathname.match(/^\/browse\/([A-Z0-9_-]+)\/?$/i)?.[1] ??
+      link.searchParams.get("selectedIssue") ??
+      "";
+  }
+  key = key.toUpperCase();
+  const project = runtime.projectKey;
   if (
-    !runtime.projectKey ||
-    !key.startsWith(runtime.projectKey.toUpperCase() + "-") ||
-    !/^\d+$/.test(key.slice(runtime.projectKey.length + 1))
+    !project ||
+    !key.startsWith(project.toUpperCase() + "-") ||
+    !/^\d+$/.test(key.slice(project.length + 1))
   ) {
     throw new Error(
-      "Enter a ticket key from this project, such as " +
-        runtime.projectKey +
-        "-1.",
+      project
+        ? "Enter a task ID like " +
+            project +
+            "-1 or paste a link to a task in this project."
+        : "Open Kinlet in a Jira project to find a task.",
     );
   }
+  return key;
+}
+
+export async function readTicket(reference: string): Promise<Ticket> {
+  const key = parseTicketReference(reference);
   const data = await (
     await jira(
       "/issue/" +

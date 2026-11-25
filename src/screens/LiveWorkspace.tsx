@@ -46,6 +46,14 @@ type Workspace = {
   publications: Array<{ id: string; steps: string[] }>;
 };
 type Comparison = { saved: Observation; current: Observation };
+type DiscoveredSources = {
+  issues: Array<{ id: string; key: string; title: string }>;
+  pages: Array<{ id: string; title: string }>;
+  pageError: string;
+  issuesTruncated: boolean;
+  pagesTruncated: boolean;
+  relationshipsIncomplete: boolean;
+};
 type DraftWorkspace = {
   branch: Branch;
   base: CheckpointSummary;
@@ -74,6 +82,9 @@ export function LiveWorkspace({
   const [issues, setIssues] = useState("");
   const [pages, setPages] = useState("");
   const [name, setName] = useState("");
+  const [discovered, setDiscovered] = useState<DiscoveredSources>();
+  const [selectedPages, setSelectedPages] = useState<string[]>([]);
+  const initialCapture = useRef(crypto.randomUUID());
   const [opened, setOpened] = useState<
     | {
         id: string;
@@ -87,7 +98,8 @@ export function LiveWorkspace({
       (kind === "proposal" ||
         kind === "publication" ||
         kind === "session" ||
-        kind === "branch")
+        kind === "branch" ||
+        kind === "checkpoint")
       ? { id, kind }
       : undefined;
   });
@@ -97,6 +109,17 @@ export function LiveWorkspace({
 
   async function load() {
     const data = await workspaceRequest<Workspace>("load");
+    if (
+      deepLink?.kind === "checkpoint" &&
+      deepLink.id &&
+      !data.checkpoints.some((entry) => entry.id === deepLink.id)
+    ) {
+      const checkpoint = await workspaceRequest<CheckpointSummary>(
+        "checkpointSummary",
+        { checkpointId: deepLink.id },
+      );
+      data.checkpoints.push(checkpoint);
+    }
     setIssues(
       data.scope?.sources
         .filter((s) => s.kind === "jira")
@@ -188,7 +211,7 @@ export function LiveWorkspace({
               Compare decision options
             </Link>
             <Link className="text-link" to="/jira">
-              Back to Jira checkpoints
+              Back to review home
             </Link>
           </div>
         }
@@ -200,16 +223,19 @@ export function LiveWorkspace({
         </p>
       )}
       {directBranch && branchEditor}
-      <LiveCheckoutDemo
-        onBranch={async (id) => {
-          await load();
-          setOpened({ kind: "branch", id });
-        }}
-        onCheckpoint={async (id) => {
-          await load();
-          setOpened({ kind: "checkpoint", id });
-        }}
-      />
+      <details className="card padded-card workspace-card">
+        <summary>Help and tutorials</summary>
+        <LiveCheckoutDemo
+          onBranch={async (id) => {
+            await load();
+            setOpened({ kind: "branch", id });
+          }}
+          onCheckpoint={async (id) => {
+            await load();
+            setOpened({ kind: "checkpoint", id });
+          }}
+        />
+      </details>
       <CrossProjectImpact />
       {workspace?.canManage && templates.length > 0 && (
         <TemplateSettings
@@ -241,37 +267,180 @@ export function LiveWorkspace({
       {workspace?.canManage && (
         <section className="card padded-card workspace-card">
           <h2>Sources to capture</h2>
-          <form onSubmit={(e) => void saveScope(e)} className="workspace-form">
-            <label>
-              Jira ticket keys or IDs
-              <textarea
-                rows={2}
-                value={issues}
-                onChange={(e) => setIssues(e.target.value)}
-                placeholder="PAY-12, PAY-15"
+          {
+            <div>
+              <p>
+                Find this project's Jira tasks and suggest linked pages or pages
+                in a Confluence space with the same key.
+              </p>
+              <Button
                 disabled={!!busy}
-              />
-            </label>
-            <label>
-              Confluence page URLs or IDs
-              <textarea
-                rows={2}
-                value={pages}
-                onChange={(e) => setPages(e.target.value)}
-                disabled={!!busy}
-              />
-            </label>
-            <p className="muted">
-              Choose up to 20 tickets from this project and 5 pages from this
-              site.
-            </p>
-            <Button
-              type="submit"
-              disabled={!!busy || (!issues.trim() && !pages.trim())}
+                onClick={() =>
+                  void perform("Finding project sources…", async () => {
+                    const result =
+                      await workspaceRequest<DiscoveredSources>("discover");
+                    setDiscovered(result);
+                    setSelectedPages([
+                      ...new Set([
+                        ...(workspace.scope?.sources
+                          .filter((source) => source.kind === "confluence")
+                          .map((source) => source.id) ?? []),
+                        ...result.pages.map((page) => page.id),
+                      ]),
+                    ]);
+                  })
+                }
+              >
+                Find project sources
+              </Button>
+              {discovered && (
+                <div>
+                  <h3>Jira tasks found</h3>
+                  {discovered.issues.length ? (
+                    <ul>
+                      {discovered.issues.map((issue) => (
+                        <li key={issue.id}>
+                          {issue.key} · {issue.title}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>No Jira tasks found.</p>
+                  )}
+                  {discovered.issuesTruncated && (
+                    <p role="status">
+                      Only the first 20 tasks can be included in this
+                      checkpoint.
+                    </p>
+                  )}
+                  <h3>Suggested Confluence pages</h3>
+                  <p>Confirm the pages that belong to this project.</p>
+                  {workspace.scope && (
+                    <p>
+                      Existing sources outside these suggestions remain
+                      selected. Use advanced source selection to remove them.
+                    </p>
+                  )}
+                  {discovered.pages.map((page) => (
+                    <label key={page.id} style={{ display: "block" }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedPages.includes(page.id)}
+                        onChange={(event) =>
+                          setSelectedPages((current) =>
+                            event.target.checked
+                              ? [...current, page.id]
+                              : current.filter((id) => id !== page.id),
+                          )
+                        }
+                      />{" "}
+                      {page.title}
+                    </label>
+                  ))}
+                  {discovered.pageError && (
+                    <p role="status">{discovered.pageError}</p>
+                  )}
+                  {!discovered.pages.length && !discovered.pageError && (
+                    <p>No matching pages found.</p>
+                  )}
+                  {discovered.pagesTruncated && (
+                    <p role="status">Only the first five pages are shown.</p>
+                  )}
+                  {discovered.relationshipsIncomplete && (
+                    <p role="status">
+                      Some Jira links could not be checked. Suggested pages may
+                      be incomplete.
+                    </p>
+                  )}
+                  <Button
+                    variant="primary"
+                    disabled={
+                      !!busy ||
+                      (!discovered.issues.length && !selectedPages.length)
+                    }
+                    onClick={() =>
+                      void perform(
+                        "Saving the initial project state…",
+                        async () => {
+                          await workspaceRequest("saveScope", {
+                            issues: [
+                              ...discovered.issues.map((issue) => issue.key),
+                              ...(workspace.scope?.sources
+                                .filter(
+                                  (source) =>
+                                    source.kind === "jira" &&
+                                    !discovered.issues.some(
+                                      (issue) => issue.id === source.id,
+                                    ),
+                                )
+                                .map((source) => source.id) ?? []),
+                            ],
+                            pages: selectedPages,
+                            revision: workspace.scope?.revision ?? 0,
+                          });
+                          try {
+                            await workspaceRequest("capture", {
+                              requestId: initialCapture.current,
+                              name: workspace.checkpoints.length
+                                ? "Sources updated"
+                                : "Initial project state",
+                            });
+                            initialCapture.current = crypto.randomUUID();
+                            setDiscovered(undefined);
+                          } finally {
+                            await load();
+                          }
+                        },
+                      )
+                    }
+                  >
+                    Save sources and capture project state
+                  </Button>
+                  <p className="muted">
+                    Kinlet saves a snapshot when you capture one. Earlier
+                    project states are not available in this workspace.
+                  </p>
+                </div>
+              )}
+            </div>
+          }
+          <details>
+            <summary>Advanced source selection</summary>
+            <form
+              onSubmit={(e) => void saveScope(e)}
+              className="workspace-form"
             >
-              Save sources
-            </Button>
-          </form>
+              <label>
+                Jira ticket keys or IDs
+                <textarea
+                  rows={2}
+                  value={issues}
+                  onChange={(e) => setIssues(e.target.value)}
+                  placeholder="PAY-12, PAY-15"
+                  disabled={!!busy}
+                />
+              </label>
+              <label>
+                Confluence page URLs or IDs
+                <textarea
+                  rows={2}
+                  value={pages}
+                  onChange={(e) => setPages(e.target.value)}
+                  disabled={!!busy}
+                />
+              </label>
+              <p className="muted">
+                Choose up to 20 tickets from this project and 5 pages from this
+                site.
+              </p>
+              <Button
+                type="submit"
+                disabled={!!busy || (!issues.trim() && !pages.trim())}
+              >
+                Save sources
+              </Button>
+            </form>
+          </details>
         </section>
       )}
       {workspace && !workspace.scope && !workspace.canManage && (
@@ -328,6 +497,22 @@ export function LiveWorkspace({
                       ? new Date(entry.finishedAt).toLocaleString()
                       : "Capture pending"}
                   </small>
+                  {!entry.finishedAt && workspace.canManage && (
+                    <Button
+                      disabled={!!busy}
+                      onClick={() =>
+                        void perform("Finishing the capture…", async () => {
+                          await workspaceRequest("capture", {
+                            requestId: entry.id,
+                            name: entry.name,
+                          });
+                          await load();
+                        })
+                      }
+                    >
+                      Continue capture
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -473,6 +658,39 @@ function CheckpointReview({
   const [branch, setBranch] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [older, setOlder] = useState<CheckpointSummary[]>([]);
+  const [olderCursor, setOlderCursor] = useState<{
+    at: string;
+    id: string;
+  } | null>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  async function loadOlderComparisons() {
+    setLoadingOlder(true);
+    try {
+      type Page = {
+        checkpoints: CheckpointSummary[];
+        next: { at: string; id: string } | null;
+      };
+      const first =
+        olderCursor === undefined
+          ? await workspaceRequest<Page>("checkpointHistory")
+          : undefined;
+      const cursor = first ? first.next : olderCursor;
+      if (!cursor) {
+        setOlderCursor(null);
+        return;
+      }
+      const page = await workspaceRequest<Page>("checkpointHistory", {
+        cursor,
+      });
+      setOlder((current) => [...current, ...page.checkpoints]);
+      setOlderCursor(page.next);
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
   useEffect(() => {
     if (!id) return;
     let active = true;
@@ -556,15 +774,30 @@ function CheckpointReview({
               }}
             >
               <option value="">Current Jira or Confluence</option>
-              {entries
+              {[
+                ...new Map(
+                  [...entries, ...older].map((entry) => [entry.id, entry]),
+                ).values(),
+              ]
                 .filter((entry) => entry.id !== id && entry.finishedAt)
                 .map((entry) => (
                   <option key={entry.id} value={entry.id}>
-                    {entry.name}
+                    {entry.name} ·{" "}
+                    {new Date(
+                      entry.finishedAt ?? entry.startedAt,
+                    ).toLocaleString()}
                   </option>
                 ))}
             </select>
           </label>
+          {entries.length >= 25 && olderCursor !== null && (
+            <Button
+              disabled={loadingOlder}
+              onClick={() => void loadOlderComparisons()}
+            >
+              {loadingOlder ? "Loading…" : "Load older captures to compare"}
+            </Button>
+          )}
           {comparison ? (
             <div className="live-versions">
               <Version
