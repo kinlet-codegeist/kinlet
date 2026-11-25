@@ -1,6 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handler } from "./workspace-api";
+import { authorizeProject } from "./workspace-resolver";
+import { captureAutomaticSource } from "./workspace-tracking-capture";
+import {
+  confluenceTrackingEvent,
+  jiraTrackingEvent,
+  reconcileAllTracking,
+} from "./workspace-tracking";
 import {
   toolReadContext,
   toolSaveDraft,
@@ -76,7 +83,7 @@ vi.mock("@forge/resolver", () => ({
 }));
 
 const ticket = { kind: "jira", id: "101" };
-const page = { kind: "confluence", id: "201" };
+const page = { kind: "confluence" as const, id: "201" };
 const adf = (text: string) => ({
   version: 1,
   type: "doc",
@@ -251,8 +258,328 @@ async function save(
 }
 
 describe("shared project workspace", () => {
+  it("reconciles more than twenty Jira tasks and five pages across cursors", async () => {
+    const jira = fixture.jira.getMockImplementation()!;
+    const issues = Array.from({ length: 21 }, (_, i) => String(1001 + i));
+    const pages = Array.from({ length: 6 }, (_, i) => String(2001 + i));
+    fixture.jira.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path.startsWith("/rest/api/3/search/jql")) {
+          const offset = Number(
+            new URL(path, "https://jira.test").searchParams.get(
+              "nextPageToken",
+            ) ?? 0,
+          );
+          const next =
+            offset + 10 < issues.length ? String(offset + 10) : undefined;
+          return Response.json({
+            issues: issues.slice(offset, offset + 10).map((id) => ({ id })),
+            isLast: !next,
+            ...(next && { nextPageToken: next }),
+          });
+        }
+        if (path === "/rest/api/3/project/99")
+          return Response.json({ key: "PAY" });
+        const match = path.match(/^\/rest\/api\/3\/issue\/(\d+)\?/);
+        if (match && issues.includes(match[1]))
+          return Response.json({
+            id: match[1],
+            key: `PAY-${match[1]}`,
+            fields: {
+              project: { id: "99" },
+              summary: `Issue ${match[1]}`,
+              description: adf("Test"),
+              updated: "2026-11-24T12:00:00.000Z",
+            },
+          });
+        return jira(path, request);
+      },
+    );
+    fixture.confluence.mockImplementation(async (path: string) => {
+      if (path.startsWith("/wiki/api/v2/spaces?"))
+        return Response.json({ results: [{ id: "202" }] });
+      if (path.startsWith("/wiki/api/v2/spaces/202/pages?"))
+        return Response.json({
+          results: pages.map((id) => ({ id })),
+          _links: {},
+        });
+      const match = path.match(/^\/wiki\/api\/v2\/pages\/(\d+)/);
+      if (match && pages.includes(match[1]))
+        return Response.json({
+          id: match[1],
+          status: "current",
+          title: `Page ${match[1]}`,
+          version: { number: 1 },
+          body: { atlas_doc_format: { value: JSON.stringify(adf("Test")) } },
+        });
+      return new Response(null, { status: 404 });
+    });
+    await send("enableTracking");
+    await reconcileAllTracking();
+    const first = await send("checkpointHistory");
+    const second = await send("checkpointHistory", { cursor: first.next });
+    expect(first.checkpoints).toHaveLength(25);
+    expect(second.checkpoints).toHaveLength(2);
+    expect(await send("trackingStatus")).toMatchObject({
+      phase: "issues",
+      lastSuccessfulSync: expect.any(String),
+    });
+  });
+  it("reconciles bounded Jira and Confluence pages, retaining prior versions without duplicates", async () => {
+    const jira = fixture.jira.getMockImplementation()!;
+    const confluence = fixture.confluence.getMockImplementation()!;
+    fixture.jira.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path.startsWith("/rest/api/3/search/jql"))
+          return Response.json({ issues: [{ id: "101" }], isLast: true });
+        if (path === "/rest/api/3/project/99")
+          return Response.json({ key: "PAY" });
+        return jira(path, request);
+      },
+    );
+    fixture.confluence.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path.startsWith("/wiki/api/v2/spaces?"))
+          return Response.json({ results: [{ id: "202" }] });
+        if (path.startsWith("/wiki/api/v2/spaces/202/pages?"))
+          return Response.json({ results: [{ id: "201" }], _links: {} });
+        return confluence(path, request);
+      },
+    );
+    await send("enableTracking");
+    await reconcileAllTracking();
+    expect(await send("trackingStatus")).toMatchObject({
+      enabled: true,
+      phase: "issues",
+      lastSuccessfulSync: expect.any(String),
+    });
+    expect((await send("checkpointHistory")).checkpoints).toHaveLength(2);
+    await jiraTrackingEvent({
+      issue: { id: "101", fields: { project: { id: "99" } } },
+    });
+    expect((await send("checkpointHistory")).checkpoints).toHaveLength(2);
+    pageVersion++;
+    pageBody = adf("Event policy update.");
+    await confluenceTrackingEvent({
+      content: { id: "201", space: { id: "202" } },
+    });
+    expect((await send("checkpointHistory")).checkpoints).toHaveLength(3);
+    await send("retryTracking");
+    pageVersion++;
+    pageBody = adf("Updated policy.");
+    await send("retryTracking");
+    await send("retryTracking");
+    expect((await send("checkpointHistory")).checkpoints).toHaveLength(4);
+    await send("disableTracking");
+    expect(await send("trackingStatus")).toMatchObject({ enabled: false });
+  });
+  it("deduplicates retried source versions and preserves older captures for branches", async () => {
+    const actor = await authorizeProject("99", "reviewer");
+    const first = await captureAutomaticSource(actor, page);
+    expect(first.created).toBe(true);
+    expect(await captureAutomaticSource(actor, page)).toEqual({
+      id: first.id,
+      created: false,
+    });
+    pageVersion = 2;
+    pageBody = adf("Updated checkout plan.");
+    const second = await captureAutomaticSource(actor, page);
+    expect(second.id).not.toBe(first.id);
+    const history = await send("checkpointHistory");
+    expect(history.checkpoints.map((item: { id: string }) => item.id)).toEqual(
+      expect.arrayContaining([first.id, second.id]),
+    );
+    const branchId = crypto.randomUUID();
+    await send("createBranch", {
+      requestId: branchId,
+      checkpointId: first.id,
+      name: "Earlier plan",
+    });
+    expect((await send("branch", { branchId })).base.id).toBe(first.id);
+    allowedPage = false;
+    expect(
+      (await send("coverage", { checkpointId: first.id })).unavailable,
+    ).toBe(1);
+  });
+  it("pages project checkpoint history without skipping captures with the same timestamp", async () => {
+    const ids = Array.from({ length: 31 }, () => crypto.randomUUID());
+    const timestamp = "2026-11-24T12:00:00.000Z";
+    const statement = fixture.db!.prepare(
+      "INSERT INTO kinlet_workspace VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const id of ids)
+      statement.run(
+        "99",
+        "checkpoint",
+        id,
+        "",
+        1,
+        timestamp,
+        JSON.stringify({
+          id,
+          name: "Saved state",
+          startedAt: timestamp,
+          finishedAt: timestamp,
+          author: "reviewer",
+          sources: [],
+        }),
+      );
+    const foreign = crypto.randomUUID();
+    statement.run(
+      "98",
+      "checkpoint",
+      foreign,
+      "",
+      1,
+      timestamp,
+      JSON.stringify({
+        id: foreign,
+        name: "Other project",
+        startedAt: timestamp,
+        author: "reviewer",
+        sources: [],
+      }),
+    );
+    const first = await send("checkpointHistory");
+    expect(first.checkpoints).toHaveLength(25);
+    expect(first.next).toBeTruthy();
+    const second = await send("checkpointHistory", { cursor: first.next });
+    expect(second.checkpoints).toHaveLength(6);
+    expect(second.next).toBeNull();
+    const found = [...first.checkpoints, ...second.checkpoints].map(
+      (entry: { id: string }) => entry.id,
+    );
+    expect(new Set(found)).toEqual(new Set(ids));
+    expect(found).not.toContain(foreign);
+    await expect(
+      send("checkpointSummary", { checkpointId: foreign }),
+    ).rejects.toThrow("unavailable");
+    await expect(
+      send("checkpointHistory", { cursor: { at: "bad", id: ids[0] } }),
+    ).rejects.toThrow("cursor");
+  });
+  it("suggests accessible same-site Confluence pages linked from Jira issues", async () => {
+    const jira = fixture.jira.getMockImplementation()!;
+    const confluence = fixture.confluence.getMockImplementation()!;
+    fixture.jira.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path === "/rest/api/3/project/99")
+          return Response.json({
+            id: "99",
+            key: "PAY",
+            self: "https://example.atlassian.net/rest/api/3/project/99",
+          });
+        if (path.startsWith("/rest/api/3/search/jql?"))
+          return Response.json({
+            isLast: true,
+            issues: [
+              { id: "101", key: "PAY-1", fields: { summary: "Checkout" } },
+            ],
+          });
+        if (path === "/rest/api/3/issue/PAY-1/remotelink")
+          return Response.json([
+            {
+              object: {
+                url: "https://example.atlassian.net/wiki/spaces/OTHER/pages/201/Plan",
+              },
+            },
+            {
+              object: {
+                url: "https://other.atlassian.net/wiki/spaces/OTHER/pages/202/Private",
+              },
+            },
+          ]);
+        return jira(path, request);
+      },
+    );
+    fixture.confluence.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path.startsWith("/wiki/api/v2/spaces?"))
+          return Response.json({ results: [] });
+        return confluence(path, request);
+      },
+    );
+    expect((await send("discover")).pages).toEqual([
+      { id: "201", title: "Checkout plan" },
+    ]);
+    allowedPage = false;
+    expect((await send("discover")).pages).toEqual([]);
+  });
+
+  it("discovers the current project's visible tasks and matching-space pages without saving them", async () => {
+    const jira = fixture.jira.getMockImplementation()!;
+    fixture.jira.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path === "/rest/api/3/project/99")
+          return Response.json({ id: "99", key: "PAY" });
+        if (path.startsWith("/rest/api/3/search/jql?"))
+          return Response.json({
+            isLast: true,
+            issues: [
+              { id: "101", key: "PAY-1", fields: { summary: "Checkout" } },
+            ],
+          });
+        return jira(path, request);
+      },
+    );
+    fixture.confluence.mockImplementation(async (path: string) => {
+      if (path.startsWith("/wiki/api/v2/spaces?"))
+        return Response.json({
+          results: [{ id: "123", key: "PAY", homepageId: "200" }],
+        });
+      if (path.startsWith("/wiki/api/v2/spaces/123/pages?"))
+        return Response.json({
+          results: [
+            { id: "200", title: "Home" },
+            { id: "201", title: "Checkout plan" },
+          ],
+        });
+      return new Response(null, { status: 403 });
+    });
+    expect(await send("discover")).toMatchObject({
+      issues: [{ id: "101", key: "PAY-1", title: "Checkout" }],
+      pages: [{ id: "201", title: "Checkout plan" }],
+      pageError: "",
+      issuesTruncated: false,
+      pagesTruncated: false,
+    });
+    expect((await send("load")).scope).toBeNull();
+  });
+
+  it("reports truncated discovery and Confluence access failures without changing the scope", async () => {
+    const jira = fixture.jira.getMockImplementation()!;
+    fixture.jira.mockImplementation(
+      async (path: string, request?: RequestInit) => {
+        if (path === "/rest/api/3/project/99")
+          return Response.json({ id: "99", key: "PAY" });
+        if (path.startsWith("/rest/api/3/search/jql?"))
+          return Response.json({
+            nextPageToken: "next-page",
+            issues: Array.from({ length: 21 }, (_, i) => ({
+              id: String(i + 100),
+              key: `PAY-${i + 1}`,
+              fields: { summary: `Task ${i + 1}` },
+            })),
+          });
+        return jira(path, request);
+      },
+    );
+    fixture.confluence.mockResolvedValue(new Response(null, { status: 403 }));
+    const found = await send<{
+      issues: unknown[];
+      pages: unknown[];
+      issuesTruncated: boolean;
+      pageError: string;
+    }>("discover");
+    expect(found.issues).toHaveLength(20);
+    expect(found.issuesTruncated).toBe(true);
+    expect(found.pages).toEqual([]);
+    expect(found.pageError).toContain("unavailable");
+    expect((await send("load")).scope).toBeNull();
+  });
+
   it.each(["jira", "confluence"] as const)(
-    "resumes a %s policy demo after an uncertain create and publishes one change per reviewed checkout field",
+    "resumes a %s policy demo after consent and an uncertain create and publishes one change per reviewed checkout field",
     async (mode) => {
       const native = new Map<
         string,
@@ -263,6 +590,12 @@ describe("shared project workspace", () => {
         }
       >();
       let loseCreateResponse = true;
+      let canCreateSample = false;
+      let canChangePolicy = false;
+      const consent = Object.assign(new Error("Authentication Required"), {
+        name: "NEEDS_AUTHENTICATION_ERR",
+        status: 401,
+      });
       const jira = fixture.jira.getMockImplementation()!;
       fixture.jira.mockImplementation(
         async (path: string, request?: RequestInit) => {
@@ -271,6 +604,7 @@ describe("shared project workspace", () => {
               issueTypes: [{ id: "10001", name: "Task", subtask: false }],
             });
           if (path === "/rest/api/3/issue" && request?.method === "POST") {
+            if (!canCreateSample) throw consent;
             const fields = JSON.parse(String(request.body)).fields;
             const id = String(301 + native.size);
             native.set(id, fields);
@@ -294,6 +628,7 @@ describe("shared project workspace", () => {
           const fields = id && native.get(id);
           if (id && fields) {
             if (request?.method === "PUT") {
+              if (id === "302" && !canChangePolicy) throw consent;
               writes.push(id);
               Object.assign(fields, JSON.parse(String(request.body)).fields);
               return new Response(null, { status: 204 });
@@ -330,6 +665,7 @@ describe("shared project workspace", () => {
           }
           if (path.startsWith("/wiki/api/v2/pages/401") && policyPage) {
             if (request?.method === "PUT") {
+              if (!canChangePolicy) throw consent;
               const payload = JSON.parse(String(request.body));
               expect(payload.version.number).toBe(policyVersion + 1);
               policyPage = payload;
@@ -354,13 +690,21 @@ describe("shared project workspace", () => {
         confirmed: true,
         pageId: mode === "confluence" ? "201" : undefined,
       };
+      await expect(send("setupCheckoutDemo", setup)).rejects.toBe(consent);
+      expect(native.size).toBe(0);
+      canCreateSample = true;
       await expect(send("setupCheckoutDemo", setup)).rejects.toThrow(
-        /Check progress/,
+        /Continue setup/,
       );
       expect(native.size).toBe(1);
       const demo = await send("setupCheckoutDemo", setup);
       expect(await send("setupCheckoutDemo", setup)).toEqual(demo);
       expect(native.size).toBe(mode === "jira" ? 2 : 1);
+      await expect(
+        send("changeCheckoutDemoPolicy", { requestId }),
+      ).rejects.toBe(consent);
+      expect(writes).toEqual([]);
+      canChangePolicy = true;
       await send("changeCheckoutDemoPolicy", { requestId });
       await send("changeCheckoutDemoPolicy", { requestId });
       const original = await send("previewProposal", {
