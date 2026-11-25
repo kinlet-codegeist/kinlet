@@ -176,6 +176,62 @@ command("workspace.coverage", async (actor, payload) => {
   return coverage(actor, checkpoint);
 });
 
+command("workspace.checkpointHistory", async (actor, payload) => {
+  const cursor = payload.cursor;
+  if (cursor !== undefined && cursor !== null) {
+    if (typeof cursor !== "object") throw new Error("Invalid history cursor.");
+    const candidate = cursor as { at?: unknown; id?: unknown };
+    if (
+      typeof candidate.at !== "string" ||
+      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(candidate.at) ||
+      !validRecordId(candidate.id)
+    )
+      throw new Error("Invalid history cursor.");
+  }
+  const page = await actor.store.historyPage<Checkpoint>(
+    "checkpoint",
+    cursor as { at: string; id: string } | undefined,
+  );
+  const summaries = page.entries.map(({ data }) => checkpointSummary(data));
+  await forEachBatch(
+    page.entries.map(({ data }, index) => ({ data, index })),
+    async ({ data, index }) => {
+      if (
+        !/^Automatic (Jira|Confluence) capture$/.test(data.name) ||
+        data.sources.length !== 1
+      )
+        return;
+      const source = data.sources[0];
+      if (!(await canReadSource(actor.client, actor.project, source))) {
+        summaries[index].name = `${data.name} · Source unavailable`;
+        return;
+      }
+      const saved = await actor.store.get<Observation>(
+        "observation",
+        observationId(data.id, source),
+      );
+      if (saved?.data.status === "captured")
+        summaries[index].name =
+          `${saved.data.version.title} (${saved.data.version.key})`;
+    },
+  );
+  return {
+    checkpoints: summaries,
+    next: page.next,
+  };
+});
+
+command("workspace.checkpointSummary", async (actor, payload) => {
+  const checkpoint = (
+    await required<Checkpoint>(
+      actor.store,
+      "checkpoint",
+      recordId(payload.checkpointId),
+    )
+  ).data;
+  return checkpointSummary(checkpoint);
+});
+
 command("workspace.load", async (actor) => {
   const store = actor.store;
   const scope = await store.get<Scope>("scope", scopeId);
@@ -242,7 +298,8 @@ command("workspace.saveScope", async (actor, payload) => {
     !issues.every(
       (key) =>
         typeof key === "string" &&
-        /^[A-Z][A-Z0-9_]{0,29}-[1-9]\d{0,11}$/.test(key),
+        (validNativeId(key) ||
+          /^[A-Z][A-Z0-9_]{0,29}-[1-9]\d{0,11}$/.test(key)),
     ) ||
     !pages.every(validNativeId)
   ) {

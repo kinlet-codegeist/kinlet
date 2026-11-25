@@ -7,6 +7,8 @@ export type WorkspaceRow<T> = {
   data: T;
 };
 type SqlRow = Omit<WorkspaceRow<unknown>, "data"> & { payload: string };
+type HistoryRow = SqlRow & { ordered_at: string };
+export type HistoryCursor = { at: string; id: string };
 
 // The installation owns the SQL database. Every record is further isolated by Jira project.
 const table = `CREATE TABLE IF NOT EXISTS kinlet_workspace (
@@ -24,6 +26,33 @@ const table = `CREATE TABLE IF NOT EXISTS kinlet_workspace (
 
 export function migrateWorkspace() {
   return migrationRunner.enqueue("kinlet_workspace_v1", table).run();
+}
+
+// Scheduled jobs have no project context; enumerate only explicitly enabled
+// tracking registrations. The installation remains the outer isolation boundary.
+export async function trackingProjects(after = "") {
+  const { rows } = await sql
+    .prepare<{ project_id: string }>(
+      "SELECT project_id FROM kinlet_workspace WHERE kind = ? AND id = ? AND project_id > ? ORDER BY project_id ASC LIMIT 25",
+    )
+    .bindParams("tracking", "current", after)
+    .execute();
+  return rows.map(({ project_id }) => project_id);
+}
+
+// Forge SQL development databases have a finite installation-wide quota.
+// Check the total payload, including legacy records, before adding new
+// automatic history. This is conservative and never deletes saved work.
+export async function workspacePayloadBytes() {
+  const { rows } = await sql
+    .prepare<{ bytes: number | string }>(
+      "SELECT COALESCE(SUM(LENGTH(payload)), 0) AS bytes FROM kinlet_workspace",
+    )
+    .execute();
+  const bytes = Number(rows[0]?.bytes);
+  if (!Number.isSafeInteger(bytes) || bytes < 0)
+    throw new Error("Could not check the workspace storage usage.");
+  return bytes;
 }
 
 function decode<T>(row: SqlRow): WorkspaceRow<T> {
@@ -61,6 +90,24 @@ export function projectStore(project: string) {
         .bindParams(project, kind, before)
         .execute();
       return rows.map(decode<T>);
+    },
+    async historyPage<T>(kind: string, cursor?: HistoryCursor) {
+      const boundary = cursor ?? { at: "9999", id: "~" };
+      const { rows } = await sql
+        .prepare<HistoryRow>(
+          "SELECT id, group_id, seq, payload, ordered_at FROM kinlet_workspace WHERE project_id = ? AND kind = ? AND (ordered_at < ? OR (ordered_at = ? AND id < ?)) ORDER BY ordered_at DESC, id DESC LIMIT 26",
+        )
+        .bindParams(project, kind, boundary.at, boundary.at, boundary.id)
+        .execute();
+      const visible = rows.slice(0, 25);
+      const last = visible[visible.length - 1];
+      return {
+        entries: visible.map(decode<T>),
+        next:
+          rows.length > 25 && last
+            ? { at: last.ordered_at, id: last.id }
+            : null,
+      };
     },
     async revisions<T>(kind: string, group: string, limit = 1) {
       const { rows } = await sql

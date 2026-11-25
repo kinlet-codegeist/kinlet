@@ -2,6 +2,8 @@ import "./workspace-demo";
 import "./workspace-history";
 import "./workspace-decision-impact";
 import "./workspace-follow-up";
+import "./workspace-discovery";
+import "./workspace-tracking";
 import { openWorkspaceReviews } from "./workspace-publication";
 import { openQuestions } from "./workspace-runs";
 import { command, resolver } from "./workspace-resolver";

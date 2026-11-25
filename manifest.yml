@@ -1,7 +1,7 @@
 modules:
   jira:projectPage:
     - key: checkpoint-workspace
-      title: Kinlet
+      title: ${KINLET_PROJECT_TAB}
       resource: checkpoint-ui
       layout: blank
       resolver:
@@ -219,7 +219,28 @@ modules:
     - key: workspace-schema
       function: workspace-migrate
       interval: hour
+    - key: tracking-reconciliation
+      function: tracking-reconcile
+      interval: fiveMinute
+  trigger:
+    - key: tracking-jira-changes
+      function: tracking-jira
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+    - key: tracking-confluence-changes
+      function: tracking-confluence
+      events:
+        - avi:confluence:created:page
+        - avi:confluence:updated:page
   function:
+    - key: tracking-reconcile
+      handler: forge/workspace-tracking.reconcileAllTracking
+      timeoutSeconds: 300
+    - key: tracking-jira
+      handler: forge/workspace-tracking.jiraTrackingEvent
+    - key: tracking-confluence
+      handler: forge/workspace-tracking.confluenceTrackingEvent
     - key: project-decisions-find
       handler: forge/workspace-runs.toolSearchApprovals
     - key: project-run-open
@@ -243,16 +264,25 @@ resources:
       port: 5174
 permissions:
   scopes:
-    - read:jira-work
-    - read:user:jira
-    - read:attachment:jira
-    - read:avatar:jira
-    - write:attachment:jira
-    - write:issue:jira
-    - read:page:confluence
-    - write:page:confluence
-    - read:graph:issue:jira
-    - read:graph:goal:atlassian
+    read:jira-work:
+      allowImpersonation: true
+    read:issue:jira:
+      allowImpersonation: true
+    read:user:jira: {}
+    read:attachment:jira: {}
+    read:avatar:jira: {}
+    write:attachment:jira: {}
+    write:issue:jira: {}
+    write:comment:jira: {}
+    write:comment.property:jira: {}
+    read:page:confluence:
+      allowImpersonation: true
+    read:space:confluence:
+      allowImpersonation: true
+    read:confluence-content.summary: {}
+    write:page:confluence: {}
+    read:graph:issue:jira: {}
+    read:graph:goal:atlassian: {}
   content:
     styles:
       - unsafe-inline
@@ -265,3 +295,7 @@ app:
       required: false
   runtime:
     name: nodejs24.x
+environment:
+  variables:
+    - key: KINLET_PROJECT_TAB
+      default: Kinlet
