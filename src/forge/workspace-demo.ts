@@ -1,4 +1,4 @@
-import { route } from "@forge/api";
+import { route, type Response } from "@forge/api";
 import { validNativeId, sourceKey, type SourceRef } from "../domain/workspace";
 import { textDocument } from "../domain/editable-passages";
 import { plainText } from "../platform/atlassian-text";
@@ -53,6 +53,24 @@ async function advance(
   if (!(await actor.store.replace(kind, id, row.seq, data)))
     throw new Error("Another request advanced this demo. Check progress.");
   return owned(actor, id);
+}
+
+async function writeSample(
+  actor: Actor,
+  id: string,
+  reserved: Awaited<ReturnType<typeof owned>>,
+  previous: Demo,
+  send: () => Promise<Response>,
+) {
+  try {
+    return await send();
+  } catch (error) {
+    // Forge prompts for consent after an unauthenticated request is rejected.
+    // Restore the run before rethrowing so setup can resume after consent.
+    if (error instanceof Error && error.name === "NEEDS_AUTHENTICATION_ERR")
+      await advance(actor, id, reserved, previous);
+    throw error;
+  }
 }
 
 function marker(id: string, slot: "target" | "policy") {
@@ -116,7 +134,7 @@ async function createRecord(
     const recovered = await findCreated(actor, demo, id, slot);
     if (!recovered)
       throw new Error(
-        "Jira or Confluence has yet to confirm the sample record. Check progress again or start a separate run.",
+        "Kinlet is waiting for confirmation that the practice item was created. Choose Continue setup to check again.",
       );
     return advance(actor, id, row, {
       ...demo,
@@ -149,31 +167,33 @@ async function createRecord(
   }
   const reserved = await advance(actor, id, row, { ...demo, pending: slot });
   const body = textDocument(slot === "target" ? initial : policyText(signIn));
-  const response = confluence
-    ? await actor.client.requestConfluence(
-        route`/wiki/api/v2/pages`,
-        payload({
-          spaceId: demo.space,
-          status: "current",
-          title: titleFor(id, slot),
-          body: {
-            representation: "atlas_doc_format",
-            value: JSON.stringify(body),
-          },
-        }),
-      )
-    : await actor.client.requestJira(
-        route`/rest/api/3/issue`,
-        payload({
-          fields: {
-            summary: titleFor(id, slot),
-            description: body,
-            project: { id: actor.project },
-            issuetype: { id: issueType },
-            labels: [marker(id, slot)],
-          },
-        }),
-      );
+  const response = await writeSample(actor, id, reserved, demo, () =>
+    confluence
+      ? actor.client.requestConfluence(
+          route`/wiki/api/v2/pages`,
+          payload({
+            spaceId: demo.space,
+            status: "current",
+            title: titleFor(id, slot),
+            body: {
+              representation: "atlas_doc_format",
+              value: JSON.stringify(body),
+            },
+          }),
+        )
+      : actor.client.requestJira(
+          route`/rest/api/3/issue`,
+          payload({
+            fields: {
+              summary: titleFor(id, slot),
+              description: body,
+              project: { id: actor.project },
+              issuetype: { id: issueType },
+              labels: [marker(id, slot)],
+            },
+          }),
+        ),
+  );
   if (!response.ok) {
     if (
       response.status >= 400 &&
@@ -186,12 +206,14 @@ async function createRecord(
       );
     }
     throw new Error(
-      "Atlassian has yet to confirm creation. Choose Check progress before retrying.",
+      "Atlassian hasn’t confirmed creation yet. Choose Continue setup to check again.",
     );
   }
   const record = await response.json();
   if (!validNativeId(record.id))
-    throw new Error("The sample record ID is pending. Choose Check progress.");
+    throw new Error(
+      "Atlassian hasn’t returned the practice item ID yet. Choose Continue setup to check again.",
+    );
   return advance(actor, id, reserved, {
     ...demo,
     [slot]: { kind: confluence ? "confluence" : "jira", id: record.id },
@@ -312,16 +334,17 @@ command("workspace.changeCheckoutDemoPolicy", async (actor, input) => {
           },
         },
   );
-  const response =
+  const response = await writeSample(actor, id, reserved, data, () =>
     policy.kind === "jira"
-      ? await actor.client.requestJira(route`/rest/api/3/issue/${policy.id}`, {
+      ? actor.client.requestJira(route`/rest/api/3/issue/${policy.id}`, {
           ...request,
           method: "PUT",
         })
-      : await actor.client.requestConfluence(
-          route`/wiki/api/v2/pages/${policy.id}`,
-          { ...request, method: "PUT" },
-        );
+      : actor.client.requestConfluence(route`/wiki/api/v2/pages/${policy.id}`, {
+          ...request,
+          method: "PUT",
+        }),
+  );
   if (!response.ok) {
     if (
       response.status >= 400 &&

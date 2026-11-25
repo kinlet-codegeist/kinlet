@@ -276,7 +276,7 @@ export function CheckoutExample() {
         description="Nova Commerce · Sample scenario"
         actions={
           <Link to="/jira" className="text-link">
-            Back to Jira checkpoints
+            Back to review home
           </Link>
         }
       />
